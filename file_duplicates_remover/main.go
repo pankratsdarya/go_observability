@@ -6,6 +6,10 @@ import (
 	"log"
 	"os"
 	"strings"
+	"time"
+
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 )
 
 var (
@@ -28,33 +32,55 @@ func init() {
 }
 
 func main() {
-	err := readingFiles(*dirPath)
+	logger, err := zap.NewProduction()
 	if err != nil {
 		log.Fatal(err)
 	}
 
+	defer func() { _ = logger.Sync() }()
+
+	err = readingFiles(*dirPath, logger)
+	if err != nil {
+		// Error has been logged in function readingFiles
+		// No need to log here
+		fmt.Println("Can't read directory. App will close in 3 seconds.")
+		time.Sleep(3 * time.Second)
+		os.Exit(1)
+	}
+
 	for i := 0; i < len(allFiles); i++ {
-		checkFiles(i)
+		checkFiles(i, logger)
 	}
 }
 
 // readingFiles reads all files in directory given and in its subdirectories
-func readingFiles(directoryPath string) error {
+func readingFiles(directoryPath string, logg *zap.Logger) error {
 	files, err := os.ReadDir(directoryPath)
 	if err != nil {
+		logg.Debug(
+			fmt.Sprintf("Can't read directory '%s'", directoryPath),
+			zap.Field{Key: "error", String: err.Error(), Type: zapcore.StringType},
+		)
+
 		return err
 	}
 
 	for _, file := range files {
 		if file.IsDir() {
-			err = readingFiles(strings.Join([]string{directoryPath, file.Name()}, "\\"))
+			err = readingFiles(strings.Join([]string{directoryPath, file.Name()}, "\\"), logg)
 			if err != nil {
+				// Error has been logged deeper in function readingFiles
+				// No need to log here
 				return err
 			}
 		} else {
 			var f filesStruct
 			fInfo, err := file.Info()
 			if err != nil {
+				logg.Debug(
+					fmt.Sprintf("Error on reading file  '%s'", strings.Join([]string{directoryPath, file.Name()}, "\\")),
+					zap.Field{Key: "error", String: err.Error(), Type: zapcore.StringType},
+				)
 				return err
 			}
 			f.fileEntry = file
@@ -68,8 +94,8 @@ func readingFiles(directoryPath string) error {
 }
 
 // checkFiles checks if file on given position in slice have copies
-// if delDuplicates flag is true, function ask which files to delete
-func checkFiles(num int) {
+// if delDuplicates flag is true, function asks which files to delete
+func checkFiles(num int, logg *zap.Logger) {
 
 	var copiesNumber []int
 	foundCopy := false
@@ -98,22 +124,46 @@ func checkFiles(num int) {
 			var numberDelete int
 			if len(copiesNumber) > 1 {
 				fmt.Println("Enter count of files to delete. Enter 0 to save all files.")
-				fmt.Scanln(&countDelete)
+				_, err := fmt.Scanln(&countDelete)
+				if err != nil || countDelete > len(copiesNumber) {
+					fmt.Println("Wrong count. Files not deleted")
+					logg.Warn(
+						fmt.Sprintf("Wrong count entered for  '%s' files. Files not deleted", allFiles[num].fileEntry.Name()),
+					)
+
+					return
+				}
 			}
 
 			for k := 0; k < countDelete; k++ {
 				fmt.Println("Enter number of file to delete. Enter 0 to save all files.")
-				fmt.Scanln(&numberDelete)
+				_, err := fmt.Scanln(&numberDelete)
+				if err != nil || countDelete < numberDelete {
+					fmt.Println("Wrong number. Files not deleted")
+					logg.Warn(
+						fmt.Sprintf("Wrong number entered for  '%s' files. Files not deleted", allFiles[num].fileEntry.Name()),
+					)
+
+					return
+				}
 				if numberDelete == 0 {
 					return
 				}
 				os.Chdir(allFiles[copiesNumber[numberDelete-2]].filePath)
-				err := os.Remove(allFiles[copiesNumber[numberDelete-2]].fileEntry.Name())
+				err = os.Remove(allFiles[copiesNumber[numberDelete-2]].fileEntry.Name())
 				if err != nil {
 					fmt.Println("File not deleted. Error occured.")
-					log.Println(err)
+					logg.Debug(
+						fmt.Sprintf("Error on deleting file  '%s'", strings.Join([]string{allFiles[copiesNumber[numberDelete-2]].filePath, allFiles[copiesNumber[numberDelete-2]].fileEntry.Name()}, "\\")),
+						zap.Field{Key: "error", String: err.Error(), Type: zapcore.StringType},
+					)
+
 				} else {
 					fmt.Println("File deleted.")
+					logg.Info(
+						fmt.Sprintf("File deleted  '%s'", strings.Join([]string{allFiles[copiesNumber[numberDelete-2]].filePath, allFiles[copiesNumber[numberDelete-2]].fileEntry.Name()}, "\\")),
+					)
+
 				}
 			}
 		}
